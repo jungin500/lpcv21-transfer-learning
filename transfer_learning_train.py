@@ -37,8 +37,8 @@ checkpoint =None #  path to model checkpoint, None if none
 batch_size = 32  # batch size 
 # iterations = 120000  # number of iterations to train  120000
 workers = 8  # number of workers for loading data in the DataLoader 4
-print_freq = 100  # print training status every __ batches
-lr =1e-3  # learning rate
+print_freq = 10  # print training status every __ batches
+lr =5e-4  # learning rate
 #decay_lr_to = 0.1  # decay learning rate to this fraction of the existing learning rate
 momentum = 0.9  # momentum
 weight_decay = 5e-4  # weight decay
@@ -167,7 +167,7 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
     # load model
     teacher_model = load_yolov5_ensemble_model(
         r'C:\Workspace\study-projects\LPCV\lpcv21-transfer-learning\baseline\solution\yolov5\weights\best.pt'
-        ).eval()
+        ).to(device).eval()
 
     # Get names and colors
     names = teacher_model.module.names if hasattr(teacher_model, 'module') else teacher_model.names
@@ -206,7 +206,7 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
         batch_size = image_original.shape[0]
 
         # Grab bbox from teacher model
-        teacher_pred = teacher_model(image_teacher)[0]
+        teacher_pred = teacher_model(image_teacher.to(device))[0]
         teacher_pred = non_max_suppression(teacher_pred, 0.4, 0.5, classes=[0, 1], agnostic=False)
 
         # Postprocess per images
@@ -214,11 +214,11 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
         batch_confss = []
         batch_clses = []
 
-        for i, det in enumerate(teacher_pred):  # detections per image
+        for det_id, det in enumerate(teacher_pred):  # detections per image
             if det is not None and len(det):
                 # Rescale boxes from img_size to image_raw_size size
-                det[:, :4] = scale_coords(image_teacher.shape[2:], det[:, :4], image_original[i].shape).round()
-                bbox_xywh = []
+                det[:, :4] = scale_coords(image_teacher.shape[2:], det[:, :4], image_original[det_id].shape).round()
+                bbox_xyminmax = []
                 confs = []
                 clses = []
 
@@ -228,27 +228,24 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
                     # img_h, img_w, _ = image_original[i].shape  # get image shape
                     img_h, img_w = input_image_shape
                     x_c, y_c, bbox_w, bbox_h = yolomain.bbox_rel(img_w, img_h, *xyxy)
-                    obj = [x_c, y_c, bbox_w, bbox_h]
-                    bbox_xywh.append(obj)
-                    confs.append([conf.item()])
-                    clses.append([cls.item()])
+                    obj_minmax = [x_c - bbox_w / 2, y_c - bbox_h, x_c + bbox_w / 2, y_c + bbox_h / 2]
+
+                    bbox_xyminmax.append(obj_minmax)
+                    confs.append(conf)
+                    clses.append(cls)
                     
-                # xywhs = torch.Tensor(bbox_xywh)
+                bbox_xyminmaxs = torch.Tensor(normalize_wh(bbox_xyminmax, input_image_shape))
                 confss = torch.Tensor(confs)
                 clses = torch.Tensor(clses)
 
-                bbox_xyminmax = xywh2xyxy(np.expand_dims(bbox_xywh, 0))[0]
-                bbox_xyminmax = normalize_wh(bbox_xyminmax, input_image_shape)
-                bbox_xyminmax = torch.Tensor(bbox_xyminmax)
-
-                batch_xyminmax.append(bbox_xyminmax)
+                batch_xyminmax.append(bbox_xyminmaxs)
                 batch_confss.append(confss)
                 batch_clses.append(clses.type(torch.int64))
 
                 # # draw boxes for visualization
-                # bbox_items = xywhs.shape[0]  # applies to all
+                # bbox_items = bbox_xyminmax.shape[0]  # applies to all
                 # for id in range(bbox_items):
-                #     xywh = [int(val) for val in xywhs[id].numpy()]
+                #     xywh = [int(val) for val in bbox_xyminmax[id].numpy()]
                 #     conf = confss[id].numpy().item()  # 1 item
                 #     cls = int(clses[id].numpy().item())  # 1 item
 
@@ -319,7 +316,7 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
             print('Epoch: [{0}][{1}/{2}][{3}]\t'
                     'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                     'Data Time {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, i, len(teacher_loader), optimizer.param_groups[1]['lr'],
+                    'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(epoch, i, len(dataloader), optimizer.param_groups[1]['lr'],
                                                                     batch_time=batch_time,
                                                                     data_time=data_time, loss=losses))
 
