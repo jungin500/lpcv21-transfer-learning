@@ -34,9 +34,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Learning parameters
 checkpoint =None #  path to model checkpoint, None if none
-batch_size = 32  # batch size 
+batch_size = 2  # batch size 
 # iterations = 120000  # number of iterations to train  120000
-workers = 8  # number of workers for loading data in the DataLoader 4
+workers = 0  # number of workers for loading data in the DataLoader 4
 print_freq = 10  # print training status every __ batches
 lr =5e-4  # learning rate
 #decay_lr_to = 0.1  # decay learning rate to this fraction of the existing learning rate
@@ -225,10 +225,10 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
                 # Write results
                 for *xyxy, conf, cls in det:
                     
-                    # img_h, img_w, _ = image_original[i].shape  # get image shape
+                    # img_h, img_w, _ = image_original[det_id].shape  # get image shape
                     img_h, img_w = input_image_shape
                     x_c, y_c, bbox_w, bbox_h = yolomain.bbox_rel(img_w, img_h, *xyxy)
-                    obj_minmax = [x_c - bbox_w / 2, y_c - bbox_h, x_c + bbox_w / 2, y_c + bbox_h / 2]
+                    obj_minmax = [x_c - bbox_w / 2, y_c - bbox_h / 2, x_c + bbox_w / 2, y_c + bbox_h / 2]
 
                     bbox_xyminmax.append(obj_minmax)
                     confs.append(conf)
@@ -243,32 +243,24 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input
                 batch_clses.append(clses.type(torch.int64))
 
                 # # draw boxes for visualization
-                # bbox_items = bbox_xyminmax.shape[0]  # applies to all
+                # bbox_items = len(bbox_xyminmax)  # applies to all
                 # for id in range(bbox_items):
-                #     xywh = [int(val) for val in bbox_xyminmax[id].numpy()]
+                #     xyxy = [int(val) for val in bbox_xyminmax[id]]
                 #     conf = confss[id].numpy().item()  # 1 item
                 #     cls = int(clses[id].numpy().item())  # 1 item
 
-                #     xyxy = xywh2xyxy(np.expand_dims(xywh, 0))[0]
-
-                #     image_original[i] = cv2.rectangle(image_original[i], (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), (255, 0, 0), 2)
-                #     image_original[i] = cv2.putText(image_original[i], "%d: %.1f%%" % (cls, conf * 100), (xyxy[0], xyxy[1] - 5), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 0, 0))
+                #     image_original[det_id] = cv2.rectangle(image_original[det_id], (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), (255, 0, 0), 2)
+                #     image_original[det_id] = cv2.putText(image_original[det_id], "%d: %.1f%%" % (cls, conf * 100), (xyxy[0], xyxy[1] - 5), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 0, 0))
 
         # End of Postprocess
 
-        # Show results
+        # # Show results
         # for image in image_original:
         #     cv2.imshow("Result", image)
         #     if cv2.waitKey(0) == ord('q'):  # q to quit
         #         raise StopIteration
 
         # Use batch_xywh, batch_conf, batch_cls as a label to train student model
-        ''' Use:
-        batch_xyminmax = [None for _ in range(batch_size)]
-        batch_confss = [None for _ in range(batch_size)]
-        batch_clses = [None for _ in range(batch_size)]
-        '''
-        
         data_time.update(time.time() - start)
 
         # if(i%200==0):
