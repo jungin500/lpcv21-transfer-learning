@@ -7,6 +7,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 import sys, os
 import cv2
+import numpy as np
+import albumentations as A
 
 sys.path.append(os.path.join(os.getcwd(), "targets", "mobilenetv3ssd"))
 sys.path.append(os.path.join(os.getcwd(), 'baseline', 'solution'))
@@ -16,7 +18,7 @@ from targets.mobilenetv3ssd.model import SSD300, MultiBoxLoss
 from targets.mobilenetv3ssd.mb3utils import *
 
 from baseline.solution.yolov5.models.experimental import attempt_load as load_yolov5_ensemble_model
-from baseline.solution.yolov5.utils.general import non_max_suppression, scale_coords
+from baseline.solution.yolov5.utils.general import non_max_suppression, scale_coords, xywh2xyxy
 from baseline.solution import main as yolomain
 
 
@@ -26,7 +28,7 @@ keep_difficult = True  # use objects considered difficult to detect?
 
 # Model parameters
 # Not too many here since the SSD300 has a very specific structure
-n_classes = len(label_map)  # number of different types of objects
+n_classes = 2  # number of different types of objects
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -34,8 +36,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 checkpoint =None #  path to model checkpoint, None if none
 batch_size = 32  # batch size 
 # iterations = 120000  # number of iterations to train  120000
-workers = 0  # number of workers for loading data in the DataLoader 4
-print_freq = 200  # print training status every __ batches
+workers = 8  # number of workers for loading data in the DataLoader 4
+print_freq = 100  # print training status every __ batches
 lr =1e-3  # learning rate
 #decay_lr_to = 0.1  # decay learning rate to this fraction of the existing learning rate
 momentum = 0.9  # momentum
@@ -97,11 +99,18 @@ def main():
     # Dataset and Dataloaders
     train_dataset = SubfolderImageOnlyDataset(
         input_folder='./data/',
-        transforms_list = [IdentityTransform(), IdentityTransform()],
+        transform = A.Compose([
+            A.RandomCrop(width=960, height=540),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(p=0.2)
+        ]),
         request_sizes = [(640, 384), (300, 300)]
         )
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                                                num_workers=workers, pin_memory=True)
+
+    dataset_image_output_size = (540, 960)  # img_h, img_w
+    input_image_shape = dataset_image_output_size
 
     # Calculate total number of epochs to train and the epochs to decay learning rate at (i.e. convert iterations to epochs)
     # To convert iterations to epochs, divide iterations by the number of iterations per epoch
@@ -132,7 +141,8 @@ def main():
               student_model=model,
               criterion=criterion,
               optimizer=optimizer,
-              epoch=epoch)
+              epoch=epoch,
+              input_image_shape=input_image_shape)
         print("epoch loss:",train_loss)      
         scheduler.step(train_loss)      
 
@@ -140,7 +150,18 @@ def main():
         save_checkpoint(epoch, model, optimizer)
 
 
-def train_transfer(dataloader, student_model, criterion, optimizer, epoch):
+def normalize_wh(x, shape):
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+
+    y[:, 0] /= shape[0]
+    y[:, 1] /= shape[1]
+    y[:, 2] /= shape[0]
+    y[:, 3] /= shape[1]
+
+    return y
+
+
+def train_transfer(dataloader, student_model, criterion, optimizer, epoch, input_image_shape):
     
     # Teacher model
     # load model
@@ -182,18 +203,21 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch):
         image_teacher = images[1]
         image_student = images[2]
 
+        batch_size = image_original.shape[0]
+
         # Grab bbox from teacher model
         teacher_pred = teacher_model(image_teacher)[0]
         teacher_pred = non_max_suppression(teacher_pred, 0.4, 0.5, classes=[0, 1], agnostic=False)
 
         # Postprocess per images
-        for i, det in enumerate(teacher_pred):  # detections per image
-            image_raw_size = image_original[i]
-            # image_resized = image_teacher[i]
+        batch_xyminmax = []
+        batch_confss = []
+        batch_clses = []
 
+        for i, det in enumerate(teacher_pred):  # detections per image
             if det is not None and len(det):
                 # Rescale boxes from img_size to image_raw_size size
-                det[:, :4] = scale_coords(image_teacher.shape[2:], det[:, :4], image_raw_size.shape).round()
+                det[:, :4] = scale_coords(image_teacher.shape[2:], det[:, :4], image_original[i].shape).round()
                 bbox_xywh = []
                 confs = []
                 clses = []
@@ -201,39 +225,53 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch):
                 # Write results
                 for *xyxy, conf, cls in det:
                     
-                    img_h, img_w, _ = image_raw_size.shape  # get image shape
+                    # img_h, img_w, _ = image_original[i].shape  # get image shape
+                    img_h, img_w = input_image_shape
                     x_c, y_c, bbox_w, bbox_h = yolomain.bbox_rel(img_w, img_h, *xyxy)
                     obj = [x_c, y_c, bbox_w, bbox_h]
                     bbox_xywh.append(obj)
                     confs.append([conf.item()])
                     clses.append([cls.item()])
                     
-                xywhs = torch.Tensor(bbox_xywh)
+                # xywhs = torch.Tensor(bbox_xywh)
                 confss = torch.Tensor(confs)
                 clses = torch.Tensor(clses)
 
-                # draw boxes for visualization
-                print("xywhs", xywhs.shape, xywhs)
-                print("confss", confss.shape, confss)
-                print("clses", clses.shape, clses)
+                bbox_xyminmax = xywh2xyxy(np.expand_dims(bbox_xywh, 0))[0]
+                bbox_xyminmax = normalize_wh(bbox_xyminmax, input_image_shape)
+                bbox_xyminmax = torch.Tensor(bbox_xyminmax)
 
-                for bbox_xywh in xywhs:
-                    
+                batch_xyminmax.append(bbox_xyminmax)
+                batch_confss.append(confss)
+                batch_clses.append(clses.type(torch.int64))
 
-                cv2.imshow("Result", image_raw_size)
-                if cv2.waitKey(0) == ord('q'):  # q to quit
-                    raise StopIteration
+                # # draw boxes for visualization
+                # bbox_items = xywhs.shape[0]  # applies to all
+                # for id in range(bbox_items):
+                #     xywh = [int(val) for val in xywhs[id].numpy()]
+                #     conf = confss[id].numpy().item()  # 1 item
+                #     cls = int(clses[id].numpy().item())  # 1 item
 
-        # # Show results
+                #     xyxy = xywh2xyxy(np.expand_dims(xywh, 0))[0]
+
+                #     image_original[i] = cv2.rectangle(image_original[i], (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]), (255, 0, 0), 2)
+                #     image_original[i] = cv2.putText(image_original[i], "%d: %.1f%%" % (cls, conf * 100), (xyxy[0], xyxy[1] - 5), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 0, 0))
+
+        # End of Postprocess
+
+        # Show results
         # for image in image_original:
         #     cv2.imshow("Result", image)
         #     if cv2.waitKey(0) == ord('q'):  # q to quit
         #         raise StopIteration
 
-        print("Exiting due to debug flag of sys.exit(0)!")
-        sys.exit(0)
-        # End of Postprocess
-
+        # Use batch_xywh, batch_conf, batch_cls as a label to train student model
+        ''' Use:
+        batch_xyminmax = [None for _ in range(batch_size)]
+        batch_confss = [None for _ in range(batch_size)]
+        batch_clses = [None for _ in range(batch_size)]
+        '''
+        
         data_time.update(time.time() - start)
 
         # if(i%200==0):
@@ -241,10 +279,16 @@ def train_transfer(dataloader, student_model, criterion, optimizer, epoch):
         #     print("batch id:",i)#([8, 3, 300, 300])
         #N=8
         # Move to default device
-        images = images.to(device)  # (batch_size (N), 3, 300, 300)
+        images = image_student.to(device)  # (batch_size (N), 3, 300, 300)
         
-        boxes = [b.to(device) for b in boxes]
-        labels = [l.to(device) for l in labels]
+        # MobileNetV3-SSD wants boxes and labels to be like:
+        # boxes -> [B, I, 4] -> 4: [xmin, ymin, xmax, ymax]
+        # labels -> [B, I]
+        boxes = [b.to(device) for b in batch_xyminmax]
+        labels = [l.squeeze().to(device) for l in batch_clses]
+        # print("labels -> ", len(labels), type(labels[0]), labels[0].shape, labels[0])
+
+        # print("boxes -> ", len(boxes), type(boxes[0]), boxes[0].shape, boxes[0], boxes[0].dtype)
 
         # Forward prop.
         predicted_locs, predicted_scores = student_model(images)  # (N, anchor_boxes_size, 4), (N, anchor_boxes_size, n_classes)

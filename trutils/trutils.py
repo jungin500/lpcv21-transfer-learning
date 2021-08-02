@@ -7,8 +7,8 @@ import os
 
 
 class IdentityTransform:
-    def __call__(self, image_resized):
-        return image_resized
+    def __call__(self, image):
+        return image
 
     def __repr__(self):
         return self.__class__.__name__ + '()'
@@ -26,16 +26,13 @@ class CvToTensor:
 
 
 class SubfolderImageOnlyDataset(torch.utils.data.Dataset):
-    def __init__(self, input_folder, transforms_list = [IdentityTransform()], request_sizes = [(224, 224)]) -> None:
+    def __init__(self, input_folder, transform = IdentityTransform(), request_sizes = [(224, 224)]) -> None:
         super().__init__()
-
-        if len(transforms_list) != len(request_sizes):
-            raise RuntimeError("transforms_list Requires per-size transforms")
 
         self.file_list = []
         self.request_sizes = request_sizes
 
-        self.transforms_list = transforms_list
+        self.transform = transform
         self.posttransforms = T.Compose([
             CvToTensor()
         ])
@@ -55,14 +52,13 @@ class SubfolderImageOnlyDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, x):
         image_original = cv2.imread(self.file_list[x])
+        image_original = self.transform(image=image_original)["image"]
         image = cv2.cvtColor(image_original, cv2.COLOR_BGR2RGB)
         return [
             image_original,
             *[
                 self.posttransforms(
-                    self.transforms_list[i](
-                        cv2.resize(image, size)
-                    )
+                    cv2.resize(image, size)
                 )
                 for i, size in enumerate(self.request_sizes)
             ]
