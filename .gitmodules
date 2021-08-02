@@ -1,0 +1,6 @@
+[submodule "baseline"]
+	path = baseline
+	url = https://github.com/lpcvai/21LPCVC-UAV_VIdeo_Track-Sample-Solution
+[submodule "models/mobilenetv3ssd"]
+	path = targets/mobilenetv3ssd
+	url = https://github.com/shaoshengsong/MobileNetV3-SSD-Compact-Version.git
